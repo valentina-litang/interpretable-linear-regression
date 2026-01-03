@@ -1,0 +1,114 @@
+---
+title: "Predictive Factors for Low Verbal Reasoning Scores"
+author: "Valentina Litang"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(MASS)
+library(glmnet)
+library(dplyr)
+library(tidyr)
+library(lme4)
+```
+
+***Using the Three Simple Rules Framework, I built a linear regression that preserves predictive power while simplifying statistical models.***
+
+# Step 1 - Select
+
+After splitting up my data into training and validating sets, I used forward AIC selection to select k features. My selected predictors were: momwhite, ein, mia, momage, birth.o, b.head, was, ark, cig.
+
+Although I was not given a codebook and I couldn't find one online, I have reason to believe that the only continuous variables of my selected predictors are momage and b.head. Given that we want the shrink from lasso to be unit agnostic, I will standardize my continuous variables.
+
+```{r}
+set.seed(123)
+dat <- read_csv("verbal_reasoning.csv")
+dat$set <-sample(c('train', 'validation'),
+                 size = nrow(dat),
+                 replace = T,
+                 prob = c(.70, .30))
+
+train <- dat |> filter(set == 'train') |> select(-set)
+validation <- dat |> filter(set == 'validation') |> select(-set)
+#test <- dat |> filter(set == 'test') |> select(-set)
+
+
+null_model <- lm(ppvtr36 ~ 1, data = train)
+full_model <- lm(ppvtr36 ~ ., data = train)
+
+forward_selection <- stepAIC(null_model, 
+                             scope = list(lower = null_model,
+                                          upper = full_model),
+                             direction = "forward")
+
+names(forward_selection$coefficients)
+
+# for later
+train_means <- sapply(train, mean)
+train_sds <- sapply(train, sd)
+
+continuous_vars <- c("b.head", "momage")
+X_continuous <- train |> dplyr::select(continuous_vars)
+scaled_X_continuous <- scale(X_continuous)
+X_other <- train |> dplyr::select(names(forward_selection$coefficients)[-1]) |> dplyr::select(-all_of(continuous_vars))
+X_final <- cbind(scaled_X_continuous, X_other)
+X_final <- as.matrix(X_final)
+```
+
+# Step 2 - Regress
+
+Then, I fit a Lasso regression on the training dataset.
+
+```{r}
+lasso <- cv.glmnet(X_final, train$ppvtr36, nfolds = 10, alpha =1)
+lasso_final <- glmnet(X_final, train$ppvtr36, lambda = lasso$lambda.min, alpha = 1)
+
+betas <- lasso_final$beta
+lasso_coef <- as.vector(betas)
+names(lasso_coef) <- rownames(betas)
+lasso_coef[lasso_coef != 0]
+```
+
+# Step 3 - Round
+
+To simplify the predictors even more, I will restrict the coefficients within a range of (-3, 3).
+
+```{r}
+simple_coef <- round(lasso_coef * 3/(max(abs(lasso_coef))))
+simple_coef
+```
+
+Finally, applied standardization to the validation based on values from the training set before fitting my model on the validation dataset.
+
+```{r}
+validation_simple <- validation
+
+for (i in 1:length(validation)) {
+  validation_simple[ , i] <- (validation_simple[ , i] - train_means[i])/train_sds[i]
+}
+
+validation_simple <- validation_simple[ , names(forward_selection$coefficients)[-1]]
+
+validation_simple <- as.matrix(validation_simple)
+simple_pred <- validation_simple %*% simple_coef
+sqrt(mean((simple_pred - validation$ppvtr36)**2))
+```
+
+Momage has a coefficient of 1 - This tells us that higher values of momage predict higher verbal reasoning scores.
+
+Momwhite has a coefficient of 3 - This tells us that having a white mom predicts a higher verbal reasoning score.
+
+Ein has a coefficient of -3 - This tells us that having a higher ein predicts a lower verbal reasoning score.
+
+Mia has a coefficient of -2 - This tells us that having a higher mia predicts a lower verbal reasoning score.
+
+Birth.o has a coefficient of -1 - This tells us that having a higher birth order predicts a lower verbal reasoning score.
+
+Was has a coefficient of -1 - This tells us that having a higher was predicts a lower verbal reasoning score.
+
+Ark has a coefficient of -1 - This tells us that having a higher ark predicts a lower verbal reasoning score.
+
+In other words, the following are risk factors for low verbal reasoning scores: younger moms, non-white moms, high ein, high mia, high birth.o, high was, and high ark. Intervention should be considered for students with some or all of the risk factors.
